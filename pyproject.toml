@@ -104,6 +104,15 @@ lint.ignore = [
 python_version = "3.10"
 files = ["src"]
 strict = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+addopts = "--disable-warnings"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
 
 [tool.uv.sources]
 aiida-restapi = { git = "https://github.com/aiidateam/aiida-restapi" }
