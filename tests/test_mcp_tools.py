@@ -16,26 +16,66 @@ def test_mcp_registration() -> None:
 
     registered_tools = set()
 
-    # 1. Try public get_tools() method (newer versions)
-    if hasattr(mcp, "get_tools"):
+    # 1. Try public list_tools() method (FastMCP >= 3.0.0)
+    if hasattr(mcp, "list_tools"):
+        tools_val = mcp.list_tools()
+        if inspect.iscoroutine(tools_val):
+            tools_list = asyncio.run(tools_val)
+        else:
+            tools_list = tools_val
+
+        # list_tools() returns a list of Tool objects
+        for tool in tools_list:
+            if hasattr(tool, "name"):
+                registered_tools.add(tool.name)
+            elif isinstance(tool, str):
+                registered_tools.add(tool)
+
+    # 2. Try public get_tools() method (FastMCP < 3.0.0)
+    elif hasattr(mcp, "get_tools"):
         tools_val = mcp.get_tools()
         if inspect.iscoroutine(tools_val):
             tools_dict = asyncio.run(tools_val)
         else:
             tools_dict = tools_val
-        registered_tools = set(tools_dict.keys())
 
-    # 2. Try private _tool_manager (older versions)
-    elif hasattr(mcp, "_tool_manager"):
+        # get_tools() returns a dict of tools or list
+        if isinstance(tools_dict, dict):
+            for k in tools_dict.keys():
+                registered_tools.add(k)
+        elif isinstance(tools_dict, list):
+            for tool in tools_dict:
+                if hasattr(tool, "name"):
+                    registered_tools.add(tool.name)
+                elif isinstance(tool, str):
+                    registered_tools.add(tool)
+
+    # 3. Try private _tool_manager (older versions)
+    if not registered_tools and hasattr(mcp, "_tool_manager"):
         manager = getattr(mcp, "_tool_manager")
-        if hasattr(manager, "_tools"):
-            registered_tools = set(getattr(manager, "_tools").keys())
-        elif hasattr(manager, "tools"):
-            registered_tools = set(getattr(manager, "tools").keys())
+        for attr in ("_tools", "tools"):
+            if hasattr(manager, attr):
+                tools_obj = getattr(manager, attr)
+                if isinstance(tools_obj, dict):
+                    registered_tools.update(tools_obj.keys())
+                elif isinstance(tools_obj, list):
+                    for tool in tools_obj:
+                        if hasattr(tool, "name"):
+                            registered_tools.add(tool.name)
+                        elif isinstance(tool, str):
+                            registered_tools.add(tool)
 
-    # 3. Direct _tools fallback
-    elif hasattr(mcp, "_tools"):
-        registered_tools = set(getattr(mcp, "_tools").keys())
+    # 4. Direct _tools fallback
+    if not registered_tools and hasattr(mcp, "_tools"):
+        tools_obj = getattr(mcp, "_tools")
+        if isinstance(tools_obj, dict):
+            registered_tools.update(tools_obj.keys())
+        elif isinstance(tools_obj, list):
+            for tool in tools_obj:
+                if hasattr(tool, "name"):
+                    registered_tools.add(tool.name)
+                elif isinstance(tool, str):
+                    registered_tools.add(tool)
 
     expected_tools = {
         "get_process_status",
