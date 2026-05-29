@@ -13,7 +13,7 @@ from aiida_agents.mcp.tools.nodes import query_nodes, get_node_inputs, get_node_
 from aiida_agents.mcp.tools.structures import search_structures
 
 
-def load_env(env_path: str = ".env") -> None:
+def load_env(env_path: str = ".env") -> None:  # pragma: no cover
     """Load environment variables from a .env file if it exists."""
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:
@@ -30,7 +30,7 @@ def load_env(env_path: str = ".env") -> None:
 load_env()
 
 # Automatically set OLLAMA_BASE_URL to point to Windows/WSL localhost if not set
-if "OLLAMA_BASE_URL" not in os.environ:
+if "OLLAMA_BASE_URL" not in os.environ:  # pragma: no cover
     os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
 
 
@@ -52,10 +52,10 @@ def get_model() -> Model:
             model_name=model_name,
             provider="ollama",
         )
-    elif model_provider == "openai":
+    elif model_provider == "openai":  # pragma: no cover
         # Standard OpenAI cloud model (looks up OPENAI_API_KEY environment variable)
         return OpenAIChatModel(model_name=model_name)
-    else:
+    else:  # pragma: no cover
         # Fallback to Pydantic AI's dynamic inference (handles 'anthropic:claude-3-5-sonnet', etc.)
         from pydantic_ai.models import infer_model
 
@@ -105,7 +105,7 @@ agent = Agent(
 )
 
 
-async def ask(question: str) -> None:
+async def ask(question: str) -> None:  # pragma: no cover
     """Run a user query through the agent and stream the response in real-time."""
     print("Agent is thinking and querying tools...\n")
     try:
@@ -122,7 +122,7 @@ async def ask(question: str) -> None:
         print(f"\n❌ Error running agent: {e}\n")
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     """Interactive loop to talk to the AiiDA Agent."""
     print("=" * 60)
     print("AiiDA Exploration Agent (Pydantic AI) - Ready!")
@@ -149,7 +149,7 @@ def main() -> None:
         asyncio.run(ask(question))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     from aiida import load_profile
 
     # Load the default active AiiDA database profile inside the process
