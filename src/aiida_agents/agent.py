@@ -12,6 +12,23 @@ from aiida_agents.mcp.tools.processes import get_process_status, list_processes
 from aiida_agents.mcp.tools.nodes import query_nodes, get_node_inputs, get_node_outputs
 from aiida_agents.mcp.tools.structures import search_structures
 
+
+def load_env(env_path: str = ".env") -> None:
+    """Load environment variables from a .env file if it exists."""
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, val = line.split("=", 1)
+                    # Don't overwrite variables already set in the shell
+                    if key.strip() not in os.environ:
+                        os.environ[key.strip()] = val.strip().strip('"').strip("'")
+
+
+# Load local environment variables from .env
+load_env()
+
 # Automatically set OLLAMA_BASE_URL to point to Windows/WSL localhost if not set
 if "OLLAMA_BASE_URL" not in os.environ:
     os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
@@ -20,8 +37,8 @@ if "OLLAMA_BASE_URL" not in os.environ:
 def get_model() -> Model:
     """Get the configured AI model dynamically from environment variables.
 
-    This ensures the agent is fully model-agnostic and modular:
-    1. By default, it runs your lightweight local 'qwen3.5:2b' on your 8GB laptop.
+    Ensuring that agent is fully model-agnostic and modular:
+    1. By default, it runs your lightweight local 'qwen3.5:2b'.
     2. In production/servers, the AiiDA team can point it to cloud models or larger local
        models simply by setting environment variables in their shell.
     """
@@ -60,11 +77,30 @@ agent = Agent(
         search_structures,
     ],
     system_prompt=(
-        "You are an expert assistant for the AiiDA (Automated Interactive Infrastructure "
+        "You are an expert agentic assistant for the AiiDA (Automated Interactive Infrastructure "
         "for Database Applications) materials science database. You help materials scientists "
-        "explore their calculations, structures, and process provenance records by querying "
-        "the database provenance graph. Always use the available tools to fetch real data "
-        "before answering. Be concise, precise, and professional."
+        "explore calculations, structures, and process provenance records by querying the database graph.\n\n"
+        "CRITICAL TOOL SELECTION RULES:\n"
+        "1. PROCESS STATUS & DETAILS:\n"
+        "   - To check the status, state, exit code, or exit message of a specific process PK, you MUST use 'get_process_status(pk=...)'.\n"
+        "   - To list recent processes, use 'list_processes(limit=...)'.\n"
+        "2. PROVENANCE INPUTS AND OUTPUTS:\n"
+        "   - To find the inputs (incoming links) of any node, you MUST use 'get_node_inputs(pk=...)'. Do NOT use query_nodes or list_processes for this.\n"
+        "   - To find the outputs (outgoing links) of any node, you MUST use 'get_node_outputs(pk=...)'. Do NOT use query_nodes or list_processes for this.\n"
+        "3. CRYSTAL STRUCTURE SEARCHING:\n"
+        "   - To find crystal structures (by elements, formulas, or names), always use 'search_structures(formula=...)'.\n"
+        "4. GENERIC NODE SEARCH:\n"
+        "   - Only use 'query_nodes' if the user specifically requests a generic search for nodes of a certain type (e.g. KpointsData, CalcJobNode) and does not specify a specific PK or process to inspect.\n\n"
+        "MULTI-STEP REASONING FLOW (DIAGNOSTICS):\n"
+        "- If a user asks to diagnose a failed calculation (e.g. 'Check status of calculation X. If it failed, what outputs did it produce?'):\n"
+        "  1. First call 'get_process_status(pk=X)'.\n"
+        "  2. Inspect the returned status and exit_status. If state is FINISHED and exit_status != 0, it failed.\n"
+        "  3. If it failed, immediately call 'get_node_outputs(pk=X)' to identify what was produced. Do NOT call list_processes or query_nodes in between.\n\n"
+        "OUTPUT FORMATTING RULES:\n"
+        "- Always present data clearly in Markdown tables or lists.\n"
+        "- Keep answers direct, concise, and professional.\n"
+        "- NEVER output raw python wrapper strings like 'AgentRunResult' in your final text.\n"
+        "- Ground your responses purely in the tool outputs. Do not guess PKs, UUIDs, or statuses."
     ),
 )
 
