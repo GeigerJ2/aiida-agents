@@ -9,7 +9,7 @@ from aiida_agents.mcp.server import mcp
 
 def test_tools_registered() -> None:
     """Every tool is wired onto the shared FastMCP instance by ``register_all``."""
-    registered = asyncio.run(mcp.get_tools())
+    registered = {tool.name for tool in asyncio.run(mcp.list_tools())}
     expected = {
         "get_process_status",
         "list_processes",
