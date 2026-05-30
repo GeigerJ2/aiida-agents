@@ -25,7 +25,6 @@ dependencies = [
     "aiida-restapi @ git+https://github.com/edan-bainglass/aiida-restapi@deps",
     "fastmcp>=3.0.0",
     "pydantic-ai>=1.44.0",
-    "uvicorn>=0.33",
 ]
 
 [project.optional-dependencies]
