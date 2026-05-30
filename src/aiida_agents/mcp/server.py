@@ -8,11 +8,10 @@ import sys
 
 from aiida import load_profile
 from fastmcp import FastMCP
+
 from aiida_agents.mcp.tools import register_all
 
-logging.basicConfig(
-    level=os.getenv("AIIDA_AGENTS_LOG_LEVEL", "INFO"), stream=sys.stderr
-)
+logging.basicConfig(level=os.getenv("AIIDA_AGENTS_LOG_LEVEL", "INFO"), stream=sys.stderr)
 
 
 def get_mcp() -> FastMCP:

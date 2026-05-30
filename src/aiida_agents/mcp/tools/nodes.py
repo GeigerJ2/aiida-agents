@@ -1,145 +1,157 @@
 """MCP tools for AiiDA generic node queries."""
 
 from __future__ import annotations
-
 import logging
 import typing as t
-from functools import lru_cache
-
 from aiida import orm
 from aiida.common.exceptions import NotExistent
-from aiida.plugins.entry_point import get_entry_point_names, load_entry_point
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from aiida_restapi.services.node import NodeService
 from aiida_restapi.common.query import QueryBuilderParams
 
-from .._types import Identifier
-
 logger = logging.getLogger(__name__)
-
-# Abstract hierarchy levels are node_type prefixes, not entry points, so they
-# can't be derived from the registry. "like <prefix>%" selects the whole subtree.
-_SUBTREE_PREFIXES: dict[str, str] = {
-    "node": "%",
-    "data": "data.%",
-    "process": "process.%",
-    "processnode": "process.%",
-    "calculation": "process.calculation.%",
-    "calculationnode": "process.calculation.%",
-    "workflow": "process.workflow.%",
-    "workflownode": "process.workflow.%",
-}
-
-# Built once at module level; all three tools share the same service instance.
-_node_service: NodeService[orm.Node, t.Any] = NodeService(orm.Node)
-
-
-@lru_cache(maxsize=1)
-def _node_type_index() -> dict[str, str]:
-    """Lowercased class name and entry-point name -> node_type, from the registry."""
-    index: dict[str, str] = {}
-    for group in ("aiida.data", "aiida.node"):
-        for name in get_entry_point_names(group):
-            try:
-                cls = load_entry_point(group, name)
-            except Exception:
-                continue
-            if node_type := getattr(cls, "class_node_type", None):
-                index[name.lower()] = node_type
-                index[cls.__name__.lower()] = node_type
-    return index
-
-
-def _node_type_for(name: str) -> str | None:
-    """Resolve a class or entry-point name to a node_type string."""
-    if name.endswith("."):  # already a fully-qualified node_type
-        return name
-    return _node_type_index().get(name.lower())
 
 
 def query_nodes(
-    node_type: str = "process",
+    node_type: str = "ProcessNode",
     limit: int = 10,
 ) -> list[dict[str, t.Any]]:
-    """Query AiiDA nodes by type.
-
-    ``node_type`` accepts an abstract hierarchy level (``node``, ``data``,
-    ``process``, ``calculation``, ``workflow``, or their ``...Node`` class
-    names) which matches the whole subtree, a concrete class or entry-point name
-    (``StructureData``, ``Int``, ``CalcJobNode``, ...) resolved to an exact
-    ``node_type`` via the plugin registry, or, as a last resort, an arbitrary
-    substring of the ``node_type``.
-    """
+    """Query AiiDA nodes by type."""
     logger.debug("query_nodes(node_type=%r, limit=%d)", node_type, limit)
 
-    normalized = node_type.lower()
-    filters: dict[str, t.Any]
-    if normalized in _SUBTREE_PREFIXES:
-        filters = {"node_type": {"like": _SUBTREE_PREFIXES[normalized]}}
-    elif (node_type_string := _node_type_for(node_type)) is not None:
-        filters = {"node_type": node_type_string}
+    # Standard common maps for direct, fast, indexed queries
+    type_map: dict[str, str] = {
+        "processnode": "process.calculation.calcjob.CalcJobNode.",
+        "structuredata": "data.core.structure.StructureData.",
+        "structure": "data.core.structure.StructureData.",
+        "dict": "data.core.dict.Dict.",
+        "calcjobnode": "process.calculation.calcjob.CalcJobNode.",
+        "calcjob": "process.calculation.calcjob.CalcJobNode.",
+        "pwcalculation": "process.calculation.calcjob.CalcJobNode.",
+        "calculation": "process.calculation.calcjob.CalcJobNode.",
+        "workchainnode": "process.workflow.workchain.WorkChainNode.",
+        "workchain": "process.workflow.workchain.WorkChainNode.",
+        "pwbaseworkchain": "process.workflow.workchain.WorkChainNode.",
+    }
+
+    normalized_type = node_type.lower()
+
+    if normalized_type in type_map:
+        filter_type = type_map[normalized_type]
+        filters = {"node_type": {"like": f"{filter_type}%"}}
     else:
         filters = {"node_type": {"like": f"%{node_type}%"}}
 
+    node_service: NodeService[orm.Node, t.Any] = NodeService(orm.Node)
     params = QueryBuilderParams(
         page_size=limit, filters=filters, order_by={"ctime": "desc"}
     )
-    res = _node_service.get_many(params)
+    res = node_service.get_many(params)
     records = [
         {
             "pk": item.get("pk"),
             "uuid": item.get("uuid"),
             "node_type": item.get("node_type"),
-            "ctime": str(item.get("ctime")),
+            "created": str(item.get("ctime")),
         }
         for item in res.data
     ]
-    logger.debug("query_nodes: returned %d nodes", len(records))
+    logger.debug("Tool output: Returned %d nodes.", len(records))
     return records
 
 
-def get_node_inputs(identifier: Identifier) -> list[dict[str, t.Any]]:
-    """Get all input nodes of an AiiDA node by its pk or uuid."""
-    logger.debug("get_node_inputs(identifier=%r)", identifier)
+def get_node_inputs(pk: int) -> list[dict[str, t.Any]]:
+    """Get all input nodes of an AiiDA node by its primary key."""
+    logger.debug("get_node_inputs(pk=%d)", pk)
     try:
-        node = orm.load_node(identifier)
-    except NotExistent as exc:
-        raise ToolError(f"No node found with identifier={identifier}.") from exc
+        node_service: NodeService[orm.Node, t.Any] = NodeService(orm.Node)
+        # Resolve PK to UUID for NodeService compatibility
+        node_info = node_service.get_one(pk)
+    except (NotExistent, ValueError) as exc:
+        raise ToolError(f"No node found with pk={pk}. Try query_nodes() to see available ones.") from exc
 
-    results = [
-        {
-            "pk": entry.node.pk,
-            "uuid": entry.node.uuid,
-            "node_type": entry.node.node_type,
-            "link_label": entry.link_label,
-            "link_type": entry.link_type.value,
-        }
-        for entry in node.base.links.get_incoming().all()
-    ]
-    logger.debug("get_node_inputs: found %d incoming links", len(results))
+    uuid = node_info.get("uuid")
+    if not uuid:
+        raise ToolError(f"Could not resolve UUID for PK {pk}")
+
+    # Load incoming links using REST api NodeService
+    params = QueryBuilderParams(page_size=100)
+    res = node_service.get_links(
+        uuid=uuid, direction="incoming", query_params=params
+    )
+
+    results = []
+    for entry in res.data:
+        # Resolve the source node details to get its PK and node_type
+        source_uuid = entry.get("source")
+        if not source_uuid:
+            continue
+        try:
+            source_info = node_service.get_one(source_uuid)
+            source_pk = source_info.get("pk")
+            source_type = source_info.get("node_type")
+        except Exception:
+            source_pk = None
+            source_type = "Unknown"
+
+        results.append(
+            {
+                "pk": source_pk,
+                "uuid": source_uuid,
+                "node_type": source_type,
+                "link_label": entry.get("link_label"),
+                "link_type": entry.get("link_type"),
+            }
+        )
+    logger.debug("Tool output: Found %d incoming links.", len(results))
     return results
 
 
-def get_node_outputs(identifier: Identifier) -> list[dict[str, t.Any]]:
-    """Get all output nodes of an AiiDA node by its pk or uuid."""
-    logger.debug("get_node_outputs(identifier=%r)", identifier)
+def get_node_outputs(pk: int) -> list[dict[str, t.Any]]:
+    """Get all output nodes of an AiiDA node by its primary key."""
+    logger.debug("get_node_outputs(pk=%d)", pk)
     try:
-        node = orm.load_node(identifier)
-    except NotExistent as exc:
-        raise ToolError(f"No node found with identifier={identifier}.") from exc
+        node_service: NodeService[orm.Node, t.Any] = NodeService(orm.Node)
+        # Resolve PK to UUID
+        node_info = node_service.get_one(pk)
+    except (NotExistent, ValueError) as exc:
+        raise ToolError(f"No node found with pk={pk}. Try query_nodes() to see available ones.") from exc
 
-    results = [
-        {
-            "pk": entry.node.pk,
-            "uuid": entry.node.uuid,
-            "node_type": entry.node.node_type,
-            "link_label": entry.link_label,
-            "link_type": entry.link_type.value,
-        }
-        for entry in node.base.links.get_outgoing().all()
-    ]
-    logger.debug("get_node_outputs: found %d outgoing links", len(results))
+    uuid = node_info.get("uuid")
+    if not uuid:
+        raise ToolError(f"Could not resolve UUID for PK {pk}")
+
+    # Load outgoing links using REST api NodeService
+    params = QueryBuilderParams(page_size=100)
+    res = node_service.get_links(
+        uuid=uuid, direction="outgoing", query_params=params
+    )
+
+    results = []
+    for entry in res.data:
+        # Resolve the target node details to get its PK and node_type
+        target_uuid = entry.get("target")
+        if not target_uuid:
+            continue
+        try:
+            target_info = node_service.get_one(target_uuid)
+            target_pk = target_info.get("pk")
+            target_type = target_info.get("node_type")
+        except Exception:
+            target_pk = None
+            target_type = "Unknown"
+
+        results.append(
+            {
+                "pk": target_pk,
+                "uuid": target_uuid,
+                "node_type": target_type,
+                "link_label": entry.get("link_label"),
+                "link_type": entry.get("link_type"),
+            }
+        )
+    logger.debug("Tool output: Found %d outgoing links.", len(results))
     return results
 
 
