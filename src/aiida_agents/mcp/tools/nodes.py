@@ -1,20 +1,25 @@
 """MCP tools for AiiDA generic node queries."""
 
 from __future__ import annotations
+
+import logging
 import typing as t
 from functools import lru_cache
+
 from aiida import orm
+from aiida.common.exceptions import NotExistent
 from aiida.plugins.entry_point import get_entry_point_names, load_entry_point
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from aiida_restapi.services.node import NodeService
 from aiida_restapi.common.query import QueryBuilderParams
+
 from .._types import Identifier
 
-# Abstract hierarchy levels (AiiDA's non-concrete Node base classes): these are
-# ``node_type`` *prefixes*, not entry points, so they can't be derived from the
-# registry. ``like "<prefix>%"`` selects the whole subtree (e.g. ``process.%`` is
-# every process node). Both the short name and the ``...Node`` class name are
-# accepted, since this is the forgiving, agent-facing input layer.
+logger = logging.getLogger(__name__)
+
+# Abstract hierarchy levels are node_type prefixes, not entry points, so they
+# can't be derived from the registry. "like <prefix>%" selects the whole subtree.
 _SUBTREE_PREFIXES: dict[str, str] = {
     "node": "%",
     "data": "data.%",
@@ -25,6 +30,9 @@ _SUBTREE_PREFIXES: dict[str, str] = {
     "workflow": "process.workflow.%",
     "workflownode": "process.workflow.%",
 }
+
+# Built once at module level; all three tools share the same service instance.
+_node_service: NodeService[orm.Node, t.Any] = NodeService(orm.Node)
 
 
 @lru_cache(maxsize=1)
@@ -38,14 +46,14 @@ def _node_type_index() -> dict[str, str]:
             except Exception:
                 continue
             if node_type := getattr(cls, "class_node_type", None):
-                index[name.lower()] = node_type  # e.g. "core.structure"
-                index[cls.__name__.lower()] = node_type  # e.g. "structuredata"
+                index[name.lower()] = node_type
+                index[cls.__name__.lower()] = node_type
     return index
 
 
 def _node_type_for(name: str) -> str | None:
-    """Resolve a class/entry-point name (or a raw node_type) to a node_type string."""
-    if name.endswith("."):  # already a node_type, e.g. "data.core.int.Int."
+    """Resolve a class or entry-point name to a node_type string."""
+    if name.endswith("."):  # already a fully-qualified node_type
         return name
     return _node_type_index().get(name.lower())
 
@@ -63,85 +71,76 @@ def query_nodes(
     ``node_type`` via the plugin registry, or, as a last resort, an arbitrary
     substring of the ``node_type``.
     """
-    print(
-        f"\n🔍 [Agent invoking tool] query_nodes(node_type='{node_type}', limit={limit})..."
-    )
+    logger.debug("query_nodes(node_type=%r, limit=%d)", node_type, limit)
 
     normalized = node_type.lower()
     filters: dict[str, t.Any]
     if normalized in _SUBTREE_PREFIXES:
         filters = {"node_type": {"like": _SUBTREE_PREFIXES[normalized]}}
     elif (node_type_string := _node_type_for(node_type)) is not None:
-        filters = {"node_type": node_type_string}  # exact, resolved from entry points
+        filters = {"node_type": node_type_string}
     else:
-        filters = {"node_type": {"like": f"%{node_type}%"}}  # last-resort substring
+        filters = {"node_type": {"like": f"%{node_type}%"}}
 
-    try:
-        node_service: NodeService[orm.Node, t.Any] = NodeService(orm.Node)
-        params = QueryBuilderParams(
-            page_size=limit, filters=filters, order_by={"ctime": "desc"}
-        )
-        res = node_service.get_many(params)
-        records = [
-            {
-                "pk": item.get("pk"),
-                "uuid": item.get("uuid"),
-                "node_type": item.get("node_type"),
-                "created": str(item.get("ctime")),
-            }
-            for item in res.data
-        ]
-        print(f"✅ Tool output: Returned {len(records)} nodes.")
-        return records
-    except Exception as e:
-        print(f"❌ Tool error: {e}")
-        return [{"error": str(e)}]
+    params = QueryBuilderParams(
+        page_size=limit, filters=filters, order_by={"ctime": "desc"}
+    )
+    res = _node_service.get_many(params)
+    records = [
+        {
+            "pk": item.get("pk"),
+            "uuid": item.get("uuid"),
+            "node_type": item.get("node_type"),
+            "ctime": str(item.get("ctime")),
+        }
+        for item in res.data
+    ]
+    logger.debug("query_nodes: returned %d nodes", len(records))
+    return records
 
 
 def get_node_inputs(identifier: Identifier) -> list[dict[str, t.Any]]:
     """Get all input nodes of an AiiDA node by its pk or uuid."""
-    print(f"\n🔍 [Agent invoking tool] get_node_inputs(identifier={identifier})...")
+    logger.debug("get_node_inputs(identifier=%r)", identifier)
     try:
-        # Single-node traversal: plain ORM gives the linked nodes directly.
         node = orm.load_node(identifier)
-        results = [
-            {
-                "pk": entry.node.pk,
-                "uuid": entry.node.uuid,
-                "node_type": entry.node.node_type,
-                "link_label": entry.link_label,
-                "link_type": entry.link_type.value,
-            }
-            for entry in node.base.links.get_incoming().all()
-        ]
-        print(f"✅ Tool output: Found {len(results)} incoming links.")
-        return results
-    except Exception as e:
-        print(f"❌ Tool error: {e}")
-        return [{"error": str(e)}]
+    except NotExistent as exc:
+        raise ToolError(f"No node found with identifier={identifier}.") from exc
+
+    results = [
+        {
+            "pk": entry.node.pk,
+            "uuid": entry.node.uuid,
+            "node_type": entry.node.node_type,
+            "link_label": entry.link_label,
+            "link_type": entry.link_type.value,
+        }
+        for entry in node.base.links.get_incoming().all()
+    ]
+    logger.debug("get_node_inputs: found %d incoming links", len(results))
+    return results
 
 
 def get_node_outputs(identifier: Identifier) -> list[dict[str, t.Any]]:
     """Get all output nodes of an AiiDA node by its pk or uuid."""
-    print(f"\n🔍 [Agent invoking tool] get_node_outputs(identifier={identifier})...")
+    logger.debug("get_node_outputs(identifier=%r)", identifier)
     try:
-        # Single-node traversal: plain ORM gives the linked nodes directly.
         node = orm.load_node(identifier)
-        results = [
-            {
-                "pk": entry.node.pk,
-                "uuid": entry.node.uuid,
-                "node_type": entry.node.node_type,
-                "link_label": entry.link_label,
-                "link_type": entry.link_type.value,
-            }
-            for entry in node.base.links.get_outgoing().all()
-        ]
-        print(f"✅ Tool output: Found {len(results)} outgoing links.")
-        return results
-    except Exception as e:
-        print(f"❌ Tool error: {e}")
-        return [{"error": str(e)}]
+    except NotExistent as exc:
+        raise ToolError(f"No node found with identifier={identifier}.") from exc
+
+    results = [
+        {
+            "pk": entry.node.pk,
+            "uuid": entry.node.uuid,
+            "node_type": entry.node.node_type,
+            "link_label": entry.link_label,
+            "link_type": entry.link_type.value,
+        }
+        for entry in node.base.links.get_outgoing().all()
+    ]
+    logger.debug("get_node_outputs: found %d outgoing links", len(results))
+    return results
 
 
 def register(mcp: FastMCP) -> None:

@@ -217,3 +217,7 @@ docs/_build
 /resource
 commands.txt
 all_processes.txt
+implementation_plan.md
+implementation_plan_rag.md
+task.md
+walkthrough.md
