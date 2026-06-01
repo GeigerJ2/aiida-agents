@@ -24,12 +24,12 @@ Runs on the same model as the sub-agents; no separate model is required.
 
 ### Sub-agents (first milestone scope)
 
-| Agent | Responsibility | AiiDA access |
-|---|---|---|
-| **Analysis Agent** | Provenance queries, process status, structure search | Read-only MCP tools |
-| **Diagnostic Agent** | Interpret calculation failures, map exit codes to causes | Read-only MCP tools + RAG (ADR-05) |
-| **Config Agent** | Build and validate workflow input parameters | Validator (ADR-07), no DB writes |
-| **Workflow Agent** | Submit workflows to AiiDA | Write tools, gated by HITL (ADR-08) |
+| Agent                | Responsibility                                           | AiiDA access                        |
+| -------------------- | -------------------------------------------------------- | ----------------------------------- |
+| **Analysis Agent**   | Provenance queries, process status, structure search     | Read-only MCP tools                 |
+| **Diagnostic Agent** | Interpret calculation failures, map exit codes to causes | Read-only MCP tools + RAG (ADR-05)  |
+| **Config Agent**     | Build and validate workflow input parameters             | Validator (ADR-07), no DB writes    |
+| **Workflow Agent**   | Submit workflows to AiiDA                                | Write tools, gated by HITL (ADR-08) |
 
 The Analysis Agent is the first-milestone deliverable.
 The remaining agents are introduced in later milestones once the read-only foundation is stable.

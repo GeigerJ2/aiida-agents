@@ -52,6 +52,7 @@ def get_model() -> Model:
         return OpenAIChatModel(model_name=model_name)
     else:  # pragma: no cover
         from pydantic_ai.models import infer_model
+
         return infer_model(f"{provider}:{model_name}")
 
 
@@ -99,5 +100,6 @@ def main() -> None:  # pragma: no cover
 
 if __name__ == "__main__":  # pragma: no cover
     from aiida import load_profile
+
     load_profile()
     main()

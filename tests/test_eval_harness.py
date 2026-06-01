@@ -23,6 +23,7 @@ from aiida_agents.agent import agent
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_agent_result(response_text: str, tool_names: list[str]) -> MagicMock:
     """Build a minimal mock of a pydantic-ai AgentRunResult."""
     result = MagicMock()
@@ -43,6 +44,7 @@ def _make_agent_result(response_text: str, tool_names: list[str]) -> MagicMock:
 # ---------------------------------------------------------------------------
 # Process listing
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_agent_list_processes(add_calc: orm.CalcJobNode) -> None:
@@ -67,6 +69,7 @@ async def test_agent_list_processes(add_calc: orm.CalcJobNode) -> None:
 # Process status
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_agent_get_process_status(add_calc: orm.CalcJobNode) -> None:
     """Agent calls get_process_status when given a specific PK."""
@@ -76,9 +79,7 @@ async def test_agent_get_process_status(add_calc: orm.CalcJobNode) -> None:
             f"Process {pk} finished with exit status 0.",
             ["get_process_status"],
         )
-        result = await agent.run(
-            f"What is the status of process with PK {pk}?"
-        )
+        result = await agent.run(f"What is the status of process with PK {pk}?")
 
     tools_called = [
         p.tool_name
@@ -92,6 +93,7 @@ async def test_agent_get_process_status(add_calc: orm.CalcJobNode) -> None:
 # ---------------------------------------------------------------------------
 # Provenance — inputs and outputs
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_agent_get_node_inputs(add_calc: orm.CalcJobNode) -> None:
@@ -139,6 +141,7 @@ async def test_agent_get_node_outputs(add_calc: orm.CalcJobNode) -> None:
 # Structure search
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_agent_search_structures(
     silicon_structure: orm.StructureData,
@@ -149,9 +152,7 @@ async def test_agent_search_structures(
             "Found 1 structure containing Silicon.",
             ["search_structures"],
         )
-        result = await agent.run(
-            "Search for crystal structures containing Silicon"
-        )
+        result = await agent.run("Search for crystal structures containing Silicon")
 
     tools_called = [
         p.tool_name
@@ -165,6 +166,7 @@ async def test_agent_search_structures(
 # ---------------------------------------------------------------------------
 # Multi-step diagnostics
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_agent_multi_step_diagnostics(add_calc: orm.CalcJobNode) -> None:
@@ -198,17 +200,17 @@ async def test_agent_multi_step_diagnostics(add_calc: orm.CalcJobNode) -> None:
 # Node querying
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
-async def test_agent_query_nodes(aiida_profile) -> None:
+@pytest.mark.usefixtures("aiida_profile")
+async def test_agent_query_nodes() -> None:
     """Agent calls query_nodes for a generic node-type search."""
     with patch.object(agent, "run", new_callable=AsyncMock) as mock_run:
         mock_run.return_value = _make_agent_result(
             "Found several CalcJobNode entries.",
             ["query_nodes"],
         )
-        result = await agent.run(
-            "Find all CalcJobNode nodes in the database"
-        )
+        result = await agent.run("Find all CalcJobNode nodes in the database")
 
     tools_called = [
         p.tool_name
