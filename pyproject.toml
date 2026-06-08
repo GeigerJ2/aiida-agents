@@ -25,6 +25,7 @@ dependencies = [
     "aiida-restapi @ git+https://github.com/edan-bainglass/aiida-restapi@deps",
     "fastmcp>=3.0.0",
     "pydantic-ai>=1.44.0",
+    "python-dotenv>=1.0",
     "typing-extensions>=4.12",
     "uvicorn>=0.33",
 ]
@@ -49,7 +50,8 @@ pre-commit = [
 
 [dependency-groups]
 dev = [
-  "aiida-agents[docs,tests,pre-commit]"
+  "aiida-agents[docs,tests,pre-commit]",
+  "ipdb"
 ]
 
 [tool.hatch.metadata]
@@ -144,4 +146,6 @@ filterwarnings = [
     "ignore:Creating AiiDA configuration folder:UserWarning",
     "ignore::pydantic.warnings.PydanticDeprecatedSince20",
 ]
+# Drop into ipdb (IPython's debugger) for `--pdb` / `--trace` post-mortem sessions.
+addopts = ["--pdbcls=IPython.terminal.debugger:TerminalPdb"]
 

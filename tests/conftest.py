@@ -9,8 +9,13 @@ node identity (the pk/uuid they created) rather than against global counts.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from aiida import orm
+
+# Make `breakpoint()` drop into ipdb by default (override via PYTHONBREAKPOINT).
+os.environ.setdefault("PYTHONBREAKPOINT", "ipdb.set_trace")
 
 # Pull in AiiDA's test fixtures (``aiida_profile``, ``aiida_localhost``, ...).
 # ``aiida_profile`` is session-scoped and autouse: it loads a temporary
