@@ -24,9 +24,14 @@ dependencies = [
     "aiida-core @ git+https://github.com/aiidateam/aiida-core.git",
     "aiida-restapi @ git+https://github.com/edan-bainglass/aiida-restapi@deps",
     "fastmcp>=3.0.0",
+    "pydantic-ai-slim[openai,anthropic]>=0.1",
+    "python-dotenv>=1.0",
     "typing-extensions>=4.12",
     "uvicorn>=0.33",
 ]
+
+[project.scripts]
+aiida-agents = "aiida_agents.cli:main"
 
 [project.optional-dependencies]
 docs = [
@@ -89,9 +94,9 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# Floor only. The deterministic, safety-critical core (validator, HITL, query
-# construction) targets ~100%; LLM/agent IO boundaries use `# pragma: no cover`
-# and are validated by the eval harness, not by mock-to-hit-lines tests.
+# Floor, not a target: a gate against big regressions. Aim high on the
+# deterministic logic; the LLM/agent IO boundaries are `# pragma: no cover`
+# rather than chased with mock-to-hit-lines tests.
 fail_under = 80
 
 [tool.ruff]
