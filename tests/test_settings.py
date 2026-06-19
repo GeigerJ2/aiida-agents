@@ -22,6 +22,7 @@ import pytest
 from pydantic import ValidationError
 
 from aiida_agents._settings import (
+    AgentSettings,
     LoggingSettings,
     ModelSettings,
     OllamaSettings,
@@ -41,6 +42,12 @@ _GROUP_DEFAULTS = [
         ("AIIDA_AGENTS_PROVIDER", "AIIDA_AGENTS_MODEL", "AIIDA_AGENTS_BASE_URL"),
         {"provider": "ollama", "model": "qwen3.5:2b", "base_url": None},
         id="model",
+    ),
+    pytest.param(
+        AgentSettings,
+        ("AIIDA_AGENTS_TOOL_RETRIES",),
+        {"tool_retries": 3},
+        id="agent",
     ),
     pytest.param(
         OllamaSettings,
@@ -130,6 +137,13 @@ def test_falls_back_to_declared_defaults(
             "literal_error",
             id="log-level",
         ),
+        pytest.param(
+            AgentSettings,
+            "AIIDA_AGENTS_TOOL_RETRIES",
+            "-1",
+            "greater_than_equal",
+            id="tool-retries-negative",
+        ),
     ],
 )
 def test_invalid_value_fails_fast(
@@ -209,6 +223,14 @@ def test_value_is_normalized(
             "port",
             9001,
             id="str-to-int",
+        ),
+        pytest.param(
+            AgentSettings,
+            "AIIDA_AGENTS_TOOL_RETRIES",
+            "5",
+            "tool_retries",
+            5,
+            id="tool-retries-str-to-int",
         ),
     ],
 )
