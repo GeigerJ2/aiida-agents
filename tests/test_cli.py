@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -15,11 +16,14 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from rich.console import Console
 
+from aiida_agents._logging import TRACE_LOGGER_NAMES
 from aiida_agents.cli import (
     _cap_history,
     _history_file,
     _key_bindings,
+    _log_tool_calls_debug,
     _prompt_continuation,
 )
 
@@ -121,3 +125,62 @@ def test_key_bindings_flip_enter_and_newline() -> None:
 def test_prompt_continuation_aligns_under_prompt() -> None:
     """The continuation fills the prompt width so wrapped lines line up under it."""
     assert _prompt_continuation(len("You: "), 0, 0) == ".... "
+
+
+def _tool_round() -> list[ModelMessage]:
+    """One tool call/return pair."""
+    return [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="test_tool", args={"x": 42}, tool_call_id="call-1"
+                )
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="test_tool",
+                    content={"status": "ok"},
+                    tool_call_id="call-1",
+                )
+            ]
+        ),
+    ]
+
+
+def test_log_tool_calls_debug(
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Console rendering is gated on DEBUG; the trace log always records.
+
+    Regression: the file trace must not depend on the console log level,
+    otherwise a log file written at INFO holds agent responses but no tool
+    calls.
+    """
+    console = Console(color_system=None)
+    root_logger = logging.getLogger()
+    initial_level = root_logger.level
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger=TRACE_LOGGER_NAMES[0]):
+            # At INFO, nothing goes to the console, but the trace logger still
+            # records both the call and the return.
+            root_logger.setLevel(logging.INFO)
+            _log_tool_calls_debug(_tool_round(), console)
+            assert capsys.readouterr().out == ""
+            assert "→ TOOL CALLED: test_tool" in caplog.text
+            assert "← TOOL RETURNED: test_tool" in caplog.text
+
+            # At DEBUG, the formatted tool calls and returns are printed too.
+            root_logger.setLevel(logging.DEBUG)
+            _log_tool_calls_debug(_tool_round(), console)
+            captured = capsys.readouterr()
+            assert "→ TOOL CALLED: test_tool" in captured.out
+            assert "ID: call-1" in captured.out
+            assert "Args: {'x': 42}" in captured.out
+            assert "← TOOL RETURNED: test_tool" in captured.out
+            assert "{'status': 'ok'}" in captured.out
+    finally:
+        root_logger.setLevel(initial_level)

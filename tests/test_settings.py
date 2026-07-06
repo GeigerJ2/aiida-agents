@@ -89,8 +89,14 @@ _GROUP_DEFAULTS = [
     ),
     pytest.param(
         LoggingSettings,
-        ("AIIDA_AGENTS_LOG_LEVEL",),
-        {"log_level": "INFO"},
+        (
+            "AIIDA_AGENTS_LOG_LEVEL",
+            "AIIDA_AGENTS_LOG_FILE",
+        ),
+        {
+            "log_level": "INFO",
+            "log_file": None,
+        },
         id="logging",
     ),
 ]

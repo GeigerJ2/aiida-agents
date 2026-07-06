@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +20,22 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.tools import DeferredToolRequests
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.text import Text
+
+from aiida_agents._logging import (
+    ToolPart,
+    _configure_logging,
+    trace_response,
+    trace_tool_part,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -36,7 +48,9 @@ async def ask(
 ) -> Any:  # pragma: no cover
     """Run a single query through the agent, returning the result."""
     logger.info("agent query: %s", question)
-    return await agent.run(question, message_history=message_history)
+    result = await agent.run(question, message_history=message_history)
+    _log_tool_calls_debug(result.new_messages(), console)
+    return result
 
 
 def _parse_args(args: str | dict[str, Any] | None) -> dict[str, Any]:
@@ -235,6 +249,7 @@ def _handle_deferred(
                     deferred_tool_results=pending.build_results(approvals=auto),
                 )
             )
+            _log_tool_calls_debug(result.new_messages(), console)
         except Exception as exc:
             print(f"\n❌ Error: {exc}")
             return history
@@ -296,6 +311,54 @@ def _prompt_continuation(width: int, _line_number: int, _wrap_count: int) -> str
     return "." * (width - 1) + " "
 
 
+def _tool_parts(messages: list[ModelMessage]) -> Iterator[ToolPart]:
+    """All tool call/return parts of ``messages``, in message order."""
+    for msg in messages:
+        for part in msg.parts:
+            if isinstance(part, ToolPart):
+                yield part
+
+
+def _render_part(part: ToolPart, console: Console) -> None:
+    """Render one tool call/return on the console with rich formatting."""
+    console.print()
+    if isinstance(part, ToolCallPart):
+        console.print(
+            f"[bold cyan]→ TOOL CALLED:[/bold cyan] [yellow]{part.tool_name}[/yellow]"
+        )
+        console.print(f"  [dim]ID:[/dim] {part.tool_call_id}")
+        console.print(f"  [dim]Args:[/dim] {part.args}")
+    else:
+        console.print(
+            f"[bold green]← TOOL RETURNED:[/bold green] [yellow]{part.tool_name}[/yellow]"
+        )
+        console.print(f"  [dim]ID:[/dim] {part.tool_call_id}")
+        console.print(
+            Panel(
+                # Text() renders the content literally: tool returns contain
+                # bracketed [source § section] headers that rich's markup
+                # parser would otherwise swallow as style tags.
+                Text(str(part.content)),
+                title=f"Tool Return: {part.tool_name}",
+                border_style="green",
+            )
+        )
+    console.print()
+
+
+def _log_tool_calls_debug(messages: list[ModelMessage], console: Console) -> None:
+    """Record tool calls/returns to the trace log; render on the console at DEBUG.
+
+    The trace log always records: the log file's content must not depend on
+    the console log level. Only the console rendering is debug-gated.
+    """
+    render = logging.getLogger().getEffectiveLevel() <= logging.DEBUG
+    for part in _tool_parts(messages):
+        trace_tool_part(part)
+        if render:
+            _render_part(part, console)
+
+
 def _print_agent(text: str) -> None:  # pragma: no cover
     """Print an agent reply, blank-line padded so it stands clear of the ``You:``
     turns on either side: a highlighted label, then the body as markdown so
@@ -305,6 +368,7 @@ def _print_agent(text: str) -> None:  # pragma: no cover
     console.print("Agent:", style="bold green")
     console.print(Markdown(text))
     console.print()
+    trace_response(text)
 
 
 def main() -> None:  # pragma: no cover
@@ -312,12 +376,16 @@ def main() -> None:  # pragma: no cover
     from aiida import load_profile
     from aiida_agents.agents import get_agent
     from aiida_agents._settings import (
+        LoggingSettings,
         ModelSettings,
         ReplSettings,
         warn_on_unrecognized_settings,
     )
 
+    # Logging first, so the unrecognized-settings warnings come out formatted.
+    _configure_logging(LoggingSettings())
     warn_on_unrecognized_settings()
+
     settings = ModelSettings()
     repl_cfg = ReplSettings()
     load_profile()
@@ -366,7 +434,14 @@ def main() -> None:  # pragma: no cover
             continue
 
         try:
-            with console.status("[dim]thinking…[/]", spinner="dots"):
+            # Only show spinner if NOT in debug mode
+            status_ctx: AbstractContextManager[object]
+            if logging.getLogger().getEffectiveLevel() > logging.DEBUG:
+                status_ctx = console.status("[dim]thinking…[/]", spinner="dots")
+            else:
+                status_ctx = nullcontext()
+
+            with status_ctx:
                 result = asyncio.run(
                     ask(
                         agent,

@@ -208,6 +208,11 @@ class LoggingSettings(_Base):
 
     log_level: _LogLevel = "INFO"
 
+    # Optional log file; setting a path enables file logging. The file gets
+    # everything: the console's records plus full tool-call and agent-reply
+    # traces, independent of ``log_level``.
+    log_file: Path | None = None
+
 
 # ---------------------------------------------------------------------------
 # Typo detection
