@@ -7,9 +7,10 @@ the database-writing tool is not grabbed as casually as a read (HITL-gated, ADR-
 
 from __future__ import annotations
 
-from aiida_agents.tools.nodes import get_node_inputs, get_node_outputs, query_nodes
+from aiida_agents.tools.nodes import get_node_inputs, get_node_outputs
 from aiida_agents.tools.processes import get_process_status, list_processes
 from aiida_agents.tools.structures import search_structures
+from aiida_agents.tools.query_builder import query_nodes
 
 __all__ = [
     "get_node_inputs",
