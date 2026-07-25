@@ -25,6 +25,12 @@ from aiida_agents.cli.output import _trace_tool_calls
 
 logger = logging.getLogger(__name__)
 
+# The agents the CLI can launch. ``analysis`` (read-only exploration) is the
+# default; ``execution`` adds the workflow generate/validate/submit pipeline.
+# The tuple is the single source for the ``--agent`` choice and the REPL's
+# ``/agent`` switch, so the two never drift apart.
+_AGENT_CHOICES = ("analysis", "execution")
+
 # Colored status glyphs so ``check`` marks success/failure the same green/red as
 # ``doctor`` (which renders its rows through rich). ``click.echo`` strips the
 # color automatically when the output is not a terminal.
@@ -85,13 +91,16 @@ def _resolve_settings_or_fail(provider: str | None, model: str | None) -> ModelS
 
 
 def _build_agent(
-    settings: ModelSettings, profile: str | None
+    settings: ModelSettings, profile: str | None, agent_type: str = "analysis"
 ) -> Agent:  # pragma: no cover
-    """Load the profile and build the agent from resolved settings.
+    """Load the profile and build the requested agent from resolved settings.
 
-    The aiida / agent-stack imports stay local so ``--help`` and shell completion
-    don't pay for loading AiiDA. Expected configuration failures are surfaced as
-    clean CLI errors instead of a traceback.
+    ``agent_type`` selects which agent to build (``"analysis"`` or
+    ``"execution"``); the value is already constrained by the ``--agent`` choice
+    and the REPL's ``/agent`` switch. The aiida / agent-stack imports stay local
+    so ``--help`` and shell completion don't pay for loading AiiDA. Expected
+    configuration failures are surfaced as clean CLI errors instead of a
+    traceback.
     """
     from aiida import load_profile
     from aiida_agents.agents import get_agent
@@ -99,7 +108,7 @@ def _build_agent(
     try:
         _ensure_ollama_model(settings)
         load_profile(profile)
-        agent = get_agent(model_settings=settings)
+        agent = get_agent(agent_type=agent_type, model_settings=settings)
     except (UserError, ValueError) as exc:
         # UserError: pydantic-ai, for a missing cloud API key. ValueError:
         # get_model for an openai-compatible endpoint without a base_url. Both

@@ -31,6 +31,7 @@ from aiida_agents.cli.output import (
 from aiida_agents.cli.rag import rag
 from aiida_agents.cli.repl import _run_repl
 from aiida_agents.cli.agent import (
+    _AGENT_CHOICES,
     _build_agent,
     _check_reachable,
     _diagnose_probe_failure,
@@ -59,9 +60,21 @@ _CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     default=None,
     help="AiiDA profile to load (defaults to the default profile).",
 )
+@click.option(
+    "--agent",
+    "-a",
+    type=click.Choice(_AGENT_CHOICES, case_sensitive=False),
+    default="analysis",
+    show_default=True,
+    help="Which agent to run for `chat` / `ask` (switch mid-session with `/agent`).",
+)
 @click.pass_context
 def cli(
-    ctx: click.Context, provider: str | None, model: str | None, profile: str | None
+    ctx: click.Context,
+    provider: str | None,
+    model: str | None,
+    profile: str | None,
+    agent: str,
 ) -> None:
     """Natural-language, multi-agent interface to AiiDA."""
     # Configure logging once, at the entry point for every subcommand, so the
@@ -76,6 +89,7 @@ def cli(
     ctx.obj["provider"] = provider
     ctx.obj["model"] = model
     ctx.obj["profile"] = profile
+    ctx.obj["agent"] = agent.lower()
     if ctx.invoked_subcommand is None:
         ctx.invoke(chat)  # pragma: no cover
 
@@ -86,8 +100,9 @@ def cli(
 def chat(ctx: click.Context) -> None:  # pragma: no cover
     """Start the interactive REPL (the default when no subcommand is given)."""
     settings = _resolve_settings_or_fail(ctx.obj["provider"], ctx.obj["model"])
-    agent = _build_agent(settings, ctx.obj["profile"])
-    _run_repl(agent, settings)
+    agent_type = ctx.obj["agent"]
+    agent = _build_agent(settings, ctx.obj["profile"], agent_type)
+    _run_repl(agent, settings, profile=ctx.obj["profile"], agent_type=agent_type)
 
 
 @cli.command("ask")
@@ -102,7 +117,7 @@ def chat(ctx: click.Context) -> None:  # pragma: no cover
 def ask_cmd(ctx: click.Context, question: str, raw: bool) -> None:
     """Answer a single question and exit (one-shot)."""
     settings = _resolve_settings_or_fail(ctx.obj["provider"], ctx.obj["model"])
-    agent = _build_agent(settings, ctx.obj["profile"])
+    agent = _build_agent(settings, ctx.obj["profile"], ctx.obj["agent"])
     result = asyncio.run(ask(agent, question))
     _render_tool_calls(result.new_messages(), console)  # debug-gated; no spinner here
     if isinstance(result.output, DeferredToolRequests):

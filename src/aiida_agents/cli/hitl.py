@@ -1,9 +1,10 @@
 """Human-in-the-loop approval flow for write (submit) tool calls.
 
-The agent registers ``submit_workflow`` with ``requires_approval=True`` (ADR-08),
-so a run that wants to write pauses and returns a ``DeferredToolRequests``. This
-module previews each proposed submission, gets the user's decision, runs approved
-ones on the main thread, and splices the outcomes back into the message history.
+The agent registers its write tools (``submit_workflow`` and the execution
+agent's ``execute_workflow_spec``) with ``requires_approval=True`` (ADR-08), so a
+run that wants to write pauses and returns a ``DeferredToolRequests``. This module
+previews each proposed submission, gets the user's decision, runs approved ones on
+the main thread, and splices the outcomes back into the message history.
 """
 
 from __future__ import annotations
@@ -22,6 +23,28 @@ from aiida_agents.cli.output import _log_tool_calls_debug, _print_agent, console
 # Bound the propose -> deny -> retry loop so a model that keeps emitting bad
 # inputs cannot spin forever.
 _MAX_APPROVAL_ROUNDS = 10
+
+# The approval-gated write tools that resolve to an AiiDA submission. Both funnel
+# through the same resolve/validate/submit path; they differ only in where the
+# entry point and inputs sit in the tool-call args (see ``_submission_args``).
+_SUBMIT_TOOLS = ("submit_workflow", "execute_workflow_spec")
+
+
+def _submission_args(call: Any) -> tuple[str, dict[str, Any]]:
+    """Extract ``(entry_point, inputs)`` from a submit tool call.
+
+    ``submit_workflow`` carries them at the top level; ``execute_workflow_spec``
+    nests them under ``validated_spec`` as ``workflow_type`` / ``inputs``. A
+    malformed ``execute_workflow_spec`` payload yields empty values, which
+    ``_prepare_submission`` then rejects with an actionable message.
+    """
+    args = call.args_as_dict()
+    if call.tool_name == "execute_workflow_spec":
+        spec = args.get("validated_spec", {})
+        if isinstance(spec, dict):
+            return spec.get("workflow_type", ""), spec.get("inputs", {})
+        return "", {}
+    return args.get("entry_point", ""), args.get("inputs", {})
 
 
 class _Preview(NamedTuple):
@@ -43,35 +66,36 @@ def _triage_submissions(
 
     Returns ``(auto_denials, previews)``:
 
-    * ``auto_denials`` maps a tool-call id to a ``ToolDenied`` for any
-      ``submit_workflow`` whose inputs fail resolution or validation. These go
-      straight back to the model so it can correct its own mistakes without
-      bothering the user.
+    * ``auto_denials`` maps a tool-call id to a ``ToolDenied`` for any submit
+      tool call (``submit_workflow`` / ``execute_workflow_spec``) whose inputs
+      fail resolution or validation. These go straight back to the model so it
+      can correct its own mistakes without bothering the user.
     * ``previews`` lists ``(call, process_class, resolved)`` for the calls the
       user must decide on: ``process_class`` / ``resolved`` are the loaded
-      process class and resolved-inputs dict for a valid ``submit_workflow``
-      (so the caller can submit on the main thread), or ``None`` for any other
+      process class and resolved-inputs dict for a valid submission (so the
+      caller can submit on the main thread), or ``None`` for any other
       approval-gated tool.
     """
     from pydantic_ai.tools import ToolDenied
 
-    from aiida_agents.tools.submit import SubmissionInputError, _prepare_submission
+    from aiida_agents.tools.execution.submit import (
+        SubmissionInputError,
+        _prepare_submission,
+    )
 
     auto: dict[str, Any] = {}
     previews: list[_Preview] = []
     for call in pending.approvals:
-        if call.tool_name != "submit_workflow":
+        if call.tool_name not in _SUBMIT_TOOLS:
             previews.append(_Preview(call, None, None))
             continue
-        args = call.args_as_dict()
+        entry_point, inputs = _submission_args(call)
         try:
-            process_class, resolved = _prepare_submission(
-                args.get("entry_point", ""), args.get("inputs", {})
-            )
+            process_class, resolved = _prepare_submission(entry_point, inputs)
         except SubmissionInputError as exc:
             auto[call.tool_call_id] = ToolDenied(
                 f"Submission rejected before reaching the user: {exc} "
-                "Correct the inputs and call submit_workflow again."
+                f"Correct the inputs and call {call.tool_name} again."
             )
             continue
         previews.append(_Preview(call, process_class, resolved))
@@ -80,7 +104,7 @@ def _triage_submissions(
 
 def _print_previews(previews: list[_Preview]) -> None:
     """Print the resolved submissions awaiting the user's confirmation."""
-    from aiida_agents.tools.submit import _format_resolved_inputs
+    from aiida_agents.tools.execution.submit import _format_resolved_inputs
 
     click.echo("\n⚠️  The agent wants to perform the following submission(s):")
     for call, _, resolved in previews:
@@ -88,8 +112,8 @@ def _print_previews(previews: list[_Preview]) -> None:
         if resolved is None:
             click.echo(f"   Inputs: {call.args_as_dict()}")
             continue
-        args = call.args_as_dict()
-        click.echo(f"   Entry : {args.get('entry_point', '<unknown>')}")
+        entry_point, _ = _submission_args(call)
+        click.echo(f"   Entry : {entry_point or '<unknown>'}")
         click.echo(f"   Inputs (resolved):\n{_format_resolved_inputs(resolved)}")
 
 
@@ -106,7 +130,7 @@ def _run_submissions(
     session) raises a cross-thread SQLAlchemy error (ADR-08). Auto-denied invalid
     submissions never ran, so they carry their denial message straight through.
     """
-    from aiida_agents.tools.submit import _run_submission
+    from aiida_agents.tools.execution.submit import _run_submission
 
     outcomes: dict[str, Any] = {
         call_id: {"rejected": denied.message} for call_id, denied in auto.items()
@@ -116,7 +140,7 @@ def _run_submissions(
             click.echo(f"   Skipping {call.tool_name}: not an executable submission.")
             outcomes[call.tool_call_id] = {"skipped": call.tool_name}
             continue
-        entry_point = call.args_as_dict().get("entry_point", "")
+        entry_point, _ = _submission_args(call)
         try:
             res = _run_submission(entry_point, process_class, resolved)
         except Exception as exc:

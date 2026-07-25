@@ -38,21 +38,35 @@ READ_TOOL_NAMES = frozenset(tool.__name__ for tool in _READ_TOOLS)
 
 
 class TestSubmitWorkflowRequiresApproval:
-    def test_submit_workflow_is_the_only_approval_tool(self) -> None:
-        """submit_workflow is registered approval-gated, and nothing else is.
+    def test_every_execution_write_tool_is_approval_gated(self) -> None:
+        """The Execution agent's write tools are approval-gated, and nothing else is.
 
         Approval-capable tools live in the agent's function toolset (populated
         by ``tool_plain``); read tools sit in a separate plain toolset with no
         approval mechanism. Asserting the whole set, not just membership, means
-        a second write tool added without ``requires_approval`` fails here too.
+        a further write tool added without ``requires_approval`` fails here too.
         """
-        function_toolset = get_agent()._function_toolset
-        assert set(function_toolset.tools) == {"submit_workflow"}
-        assert function_toolset.tools["submit_workflow"].requires_approval is True
+        function_toolset = get_agent("execution")._function_toolset
+        # Both tools that touch the database: the submission itself, and the
+        # structure import that writes a StructureData from a file on disk.
+        assert set(function_toolset.tools) == {
+            "execute_workflow_spec",
+            "import_structure",
+        }
+        for name in ("execute_workflow_spec", "import_structure"):
+            assert function_toolset.tools[name].requires_approval is True
+
+    def test_analysis_agent_holds_no_write_tool(self) -> None:
+        """The Analysis agent is read-only: submission is the Execution agent's.
+
+        Nothing is registered via ``tool_plain`` at all, so no write tool can
+        reach the database from this agent, gated or otherwise.
+        """
+        assert set(get_agent("analysis")._function_toolset.tools) == set()
 
     def test_read_tools_match_the_registered_set(self) -> None:
-        """The read toolset is exactly ``_READ_TOOLS``, and the write tool never
-        leaks into it, an ungated submit_workflow here would bypass approval.
+        """The read toolset is exactly ``_READ_TOOLS``, and no write tool leaks
+        into it, an ungated write tool here would bypass approval.
         """
         agent = get_agent()
         retry = next(ts for ts in agent.toolsets if isinstance(ts, RetryOnToolError))
@@ -60,9 +74,56 @@ class TestSubmitWorkflowRequiresApproval:
         assert isinstance(read_toolset, FunctionToolset)
         assert set(read_toolset.tools) == READ_TOOL_NAMES
         assert "submit_workflow" not in read_toolset.tools
+        assert "execute_workflow_spec" not in read_toolset.tools
 
 
 MULTIPLY_ADD = "core.arithmetic.multiply_add"
+
+
+class TestSubmissionArgs:
+    """Both write tools reduce to the same ``(entry_point, inputs)`` pair, but
+    ``execute_workflow_spec`` nests them under ``validated_spec`` while
+    ``submit_workflow`` carries them at the top level.
+    """
+
+    def test_submit_workflow_reads_top_level_args(self) -> None:
+        from aiida_agents.cli.hitl import _submission_args
+
+        call = ToolCallPart(
+            tool_name="submit_workflow",
+            args={"entry_point": MULTIPLY_ADD, "inputs": {"x": 1}},
+            tool_call_id="c1",
+        )
+        assert _submission_args(call) == (MULTIPLY_ADD, {"x": 1})
+
+    def test_execute_workflow_spec_reads_nested_spec(self) -> None:
+        from aiida_agents.cli.hitl import _submission_args
+
+        call = ToolCallPart(
+            tool_name="execute_workflow_spec",
+            args={
+                "validated_spec": {
+                    "workflow_type": "aiida.workflows:PwRelaxWorkChain",
+                    "inputs": {"structure": 1},
+                }
+            },
+            tool_call_id="c1",
+        )
+        assert _submission_args(call) == (
+            "aiida.workflows:PwRelaxWorkChain",
+            {"structure": 1},
+        )
+
+    def test_execute_workflow_spec_missing_spec_yields_empty(self) -> None:
+        """A malformed payload yields empty values, which _prepare_submission
+        then rejects with an actionable message (rather than raising here).
+        """
+        from aiida_agents.cli.hitl import _submission_args
+
+        call = ToolCallPart(
+            tool_name="execute_workflow_spec", args={}, tool_call_id="c1"
+        )
+        assert _submission_args(call) == ("", {})
 
 
 class TestTriageSubmissions:
@@ -124,6 +185,59 @@ class TestTriageSubmissions:
         assert auto == {}
         assert previews == [(call, None, None)]
 
+    def test_invalid_execute_workflow_spec_is_denied_naming_its_tool(self) -> None:
+        """The execution agent's write tool goes through the same triage: an
+        invalid one is denied without prompting, and the denial names the tool
+        the model must retry (execute_workflow_spec, not submit_workflow).
+        """
+        call = ToolCallPart(
+            tool_name="execute_workflow_spec",
+            args={
+                "validated_spec": {
+                    "workflow_type": MULTIPLY_ADD,
+                    "inputs": {"x": 1, "y": 2},  # missing z / code
+                }
+            },
+            tool_call_id="c1",
+        )
+        auto, previews = _triage_submissions(self._pending(call))
+
+        assert previews == []
+        assert isinstance(auto["c1"], ToolDenied)
+        assert "execute_workflow_spec again" in auto["c1"].message
+
+    def test_valid_execute_workflow_spec_is_queued_for_the_user(
+        self, arithmetic_add_code: orm.InstalledCode
+    ) -> None:
+        """A valid execute_workflow_spec resolves through its nested spec and
+        reaches the confirmation prompt, exactly like submit_workflow.
+        """
+        call = ToolCallPart(
+            tool_name="execute_workflow_spec",
+            args={
+                "validated_spec": {
+                    "workflow_type": MULTIPLY_ADD,
+                    "inputs": {
+                        "x": 2,
+                        "y": 3,
+                        "z": 4,
+                        "code": {"pk": arithmetic_add_code.pk},
+                    },
+                }
+            },
+            tool_call_id="c1",
+        )
+        auto, previews = _triage_submissions(self._pending(call))
+
+        assert auto == {}
+        assert len(previews) == 1
+        _, process_class, resolved = previews[0]
+        from aiida.plugins import WorkflowFactory
+
+        assert process_class is WorkflowFactory(MULTIPLY_ADD)
+        assert resolved is not None
+        assert isinstance(resolved["x"], orm.Int) and resolved["x"].value == 2
+
 
 def test_run_submissions_records_one_outcome_per_call(
     monkeypatch: pytest.MonkeyPatch,
@@ -143,7 +257,7 @@ def test_run_submissions_records_one_outcome_per_call(
         return {"workflow": entry_point, "pk": 7, "state": "created"}
 
     monkeypatch.setattr(
-        "aiida_agents.tools.submit._run_submission", _fake_run_submission
+        "aiida_agents.tools.execution.submit._run_submission", _fake_run_submission
     )
 
     ok = ToolCallPart(
@@ -269,7 +383,8 @@ def test_print_previews_shows_resolved_submission_and_raw_fallback(
     from aiida_agents.cli.hitl import _Preview
 
     monkeypatch.setattr(
-        "aiida_agents.tools.submit._format_resolved_inputs", lambda resolved: "INPUTS"
+        "aiida_agents.tools.execution.submit._format_resolved_inputs",
+        lambda resolved: "INPUTS",
     )
 
     submit = ToolCallPart(

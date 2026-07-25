@@ -7,13 +7,12 @@ are already found through AiiDA's own ``aiida.workflows`` / ``aiida.calculations
 registry. This channel carries what that registry cannot: domain tools,
 documentation corpora, and prompt guidance.
 
-``tools`` and ``prompt_fragment`` are fully wired: ``get_agent()`` registers a
-contributed tool and appends a contributed fragment to the system prompt.
-``rag_corpora`` is discovered and validated here, but not yet consumed further
--- indexing a contributed corpus into its own searchable collection, and
-having ``search_aiida_docs`` reach it, is not implemented yet. A
-:class:`LoadedPlugin`'s ``corpora`` is therefore inert today; treat it as the
-declared contract for that follow-up, not a working feature.
+All three hooks are wired: ``get_agent()`` registers a contributed tool and
+appends a contributed fragment to the system prompt, and ``aiida-agents rag
+build`` indexes each contributed ``rag_corpora`` entry into its own collection
+(``rag.indexing.index_plugin_corpora``), which ``search_aiida_docs`` then
+searches alongside the core AiiDA docs, attributing each hit to the corpus it
+came from.
 
 Public API
 ----------

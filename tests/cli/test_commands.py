@@ -149,13 +149,66 @@ def test_ask_prints_the_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     ) -> _FakeResult:
         return _FakeResult("42 is the answer")
 
-    monkeypatch.setattr(commands, "_build_agent", lambda settings, profile: object())
+    monkeypatch.setattr(
+        commands, "_build_agent", lambda settings, profile, agent_type: object()
+    )
     monkeypatch.setattr(commands, "ask", _fake_ask)
 
     result = CliRunner().invoke(cli, ["ask", "what is 6 times 7"])
 
     assert result.exit_code == 0
     assert "42 is the answer" in result.output
+
+
+@pytest.mark.parametrize(
+    "argv, expected_agent",
+    [
+        pytest.param(["ask", "hi"], "analysis", id="default-is-analysis"),
+        pytest.param(
+            ["--agent", "execution", "ask", "hi"], "execution", id="long-flag"
+        ),
+        pytest.param(["-a", "execution", "ask", "hi"], "execution", id="short-flag"),
+        pytest.param(
+            ["--agent", "EXECUTION", "ask", "hi"], "execution", id="case-fold"
+        ),
+    ],
+)
+def test_agent_flag_selects_the_agent(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected_agent: str
+) -> None:
+    """`--agent`/`-a` picks which agent `_build_agent` builds (default analysis),
+    case-insensitively. Pins the flag→agent_type wiring since it flips a default.
+    """
+    from aiida_agents.cli import commands
+
+    captured: dict[str, str] = {}
+
+    def _fake_build(settings: object, profile: object, agent_type: str) -> object:
+        captured["agent_type"] = agent_type
+        return object()
+
+    async def _fake_ask(
+        agent: object, question: str, message_history: object = None
+    ) -> _FakeResult:
+        return _FakeResult("ok")
+
+    monkeypatch.setattr(commands, "_build_agent", _fake_build)
+    monkeypatch.setattr(commands, "ask", _fake_ask)
+
+    result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code == 0
+    assert captured["agent_type"] == expected_agent
+
+
+def test_agent_flag_rejects_unknown_choice() -> None:
+    """`--agent` is a `click.Choice`, so a bad value is a clean usage error
+    listing the real agents (mirrors the `--provider` guard).
+    """
+    result = CliRunner().invoke(cli, ["--agent", "bogus", "ask", "hi"])
+    assert result.exit_code == 2  # Click usage error, before any work
+    assert "bogus" in result.output
+    assert "execution" in result.output  # the derived choices are listed
 
 
 def test_ask_rejects_a_deferred_write(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -171,7 +224,9 @@ def test_ask_rejects_a_deferred_write(monkeypatch: pytest.MonkeyPatch) -> None:
     ) -> _FakeResult:
         return _FakeResult(DeferredToolRequests(approvals=[]))
 
-    monkeypatch.setattr(commands, "_build_agent", lambda settings, profile: object())
+    monkeypatch.setattr(
+        commands, "_build_agent", lambda settings, profile, agent_type: object()
+    )
     monkeypatch.setattr(commands, "ask", _fake_ask)
 
     result = CliRunner().invoke(cli, ["ask", "please submit a workflow"])

@@ -18,7 +18,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from aiida_agents._settings import ModelSettings, ReplSettings
-from aiida_agents.cli.agent import ask
+from aiida_agents.cli.agent import _AGENT_CHOICES, _build_agent, ask
 from aiida_agents.cli.hitl import _handle_deferred
 from aiida_agents.cli.output import (
     _format_duration,
@@ -156,14 +156,42 @@ def _run_turn(
     return history
 
 
-def _run_repl(agent: Agent, settings: ModelSettings) -> None:  # pragma: no cover
-    """Drive the interactive REPL: read a line, dispatch commands, run the turn."""
+def _parse_agent_switch(question: str, current: str) -> str | None:
+    """Parse a ``/agent`` REPL command into the requested agent name.
+
+    Returns the requested agent name for a valid ``/agent <name>``, or ``None``
+    for a bare ``/agent`` or an unknown name (after echoing the current agent and
+    usage). The caller rebuilds only when the returned name differs from
+    ``current``, so re-selecting the active agent is a no-op.
+    """
+    parts = question.split()
+    if len(parts) >= 2 and parts[1].lower() in _AGENT_CHOICES:
+        return parts[1].lower()
+    click.echo(
+        f"Current agent: {current.capitalize()} Agent. "
+        f"Usage: /agent {' | '.join(_AGENT_CHOICES)}\n"
+    )
+    return None
+
+
+def _run_repl(
+    agent: Agent,
+    settings: ModelSettings,
+    profile: str | None = None,
+    agent_type: str = "analysis",
+) -> None:  # pragma: no cover
+    """Drive the interactive REPL: read a line, dispatch commands, run the turn.
+
+    ``profile`` and ``agent_type`` are kept so ``/agent`` can rebuild the agent in
+    place (same profile, different agent) and reset the conversation.
+    """
     repl_cfg = ReplSettings()
     session = _make_session(repl_cfg)
 
     click.echo(
-        f"AiiDA Agent [{settings.provider}:{settings.model}] - "
+        f"AiiDA {agent_type.capitalize()} Agent [{settings.provider}:{settings.model}] - "
         "type 'quit' to exit, '/clear' to start a new conversation, "
+        "'/agent [analysis|execution]' to switch agent, "
         "Ctrl+Enter (or Esc then Enter) for a new line\n"
     )
 
@@ -189,6 +217,17 @@ def _run_repl(agent: Agent, settings: ModelSettings) -> None:  # pragma: no cove
         if question.lower() == "/clear":
             history = []
             click.echo("Conversation cleared.\n")
+            continue
+        if question.lower().startswith("/agent"):
+            requested = _parse_agent_switch(question, agent_type)
+            if requested is not None and requested != agent_type:
+                agent_type = requested
+                agent = _build_agent(settings, profile, agent_type)
+                history = []
+                click.echo(
+                    f"Switched to {agent_type.capitalize()} Agent. "
+                    "Conversation cleared.\n"
+                )
             continue
 
         history = _run_turn(agent, question, history, repl_cfg)

@@ -20,6 +20,7 @@ from aiida_agents.cli.repl import (
     _cap_history,
     _history_file,
     _key_bindings,
+    _parse_agent_switch,
     _prompt_continuation,
 )
 
@@ -126,3 +127,23 @@ def test_key_bindings_flip_enter_and_newline() -> None:
 def test_prompt_continuation_aligns_under_prompt() -> None:
     """The continuation fills the prompt width so wrapped lines line up under it."""
     assert _prompt_continuation(len("You: "), 0, 0) == ".... "
+
+
+@pytest.mark.parametrize(
+    "question, expected",
+    [
+        pytest.param("/agent execution", "execution", id="switch"),
+        pytest.param("/agent ANALYSIS", "analysis", id="case-insensitive"),
+        pytest.param("/agent", None, id="bare-shows-usage"),
+        pytest.param("/agent bogus", None, id="unknown-name-shows-usage"),
+    ],
+)
+def test_parse_agent_switch(
+    capsys: pytest.CaptureFixture[str], question: str, expected: str | None
+) -> None:
+    """``/agent <name>`` returns the requested agent; a bare or unknown name
+    returns ``None`` and echoes the current agent plus usage.
+    """
+    assert _parse_agent_switch(question, current="analysis") == expected
+    if expected is None:
+        assert "Usage: /agent" in capsys.readouterr().out

@@ -15,8 +15,9 @@ from aiida.common.exceptions import MissingEntryPointError
 from aiida.engine import CalcJob, Process, submit
 from aiida.manage import get_manager
 from aiida.plugins.entry_point import load_entry_point
+from plumpy.ports import PortNamespace
 
-from ._types import SubmitResult
+from .._types import SubmitResult
 
 logger = logging.getLogger(__name__)
 
@@ -83,25 +84,18 @@ def _resolve_node_reference(ref: dict[str, Any], port_name: str) -> orm.Node:
     Supported reference forms:
         {"pk": 42}                  — load by PK
         {"uuid": "abc-..."}         — load by UUID
-        {"label": "bash@localhost"} — load Code by label (Code ports only)
-
-    Args:
-        ref: The reference dict from the user.
-        port_name: Port name, used only for error messages.
-
-    Returns:
-        The loaded AiiDA node.
+        {"label": "name@computer"}  — load Code by label
 
     Raises:
-        SubmissionInputError: If the reference form is unrecognised or the node
-            is not found.
+        SubmissionInputError: If the reference format is unrecognised, malformed,
+            or the target node does not exist.
     """
     if "pk" in ref:
         try:
             return orm.load_node(ref["pk"])
         except Exception as exc:
             raise SubmissionInputError(
-                f"No node found with pk={ref['pk']!r} for input {port_name!r}"
+                f"No node found with pk={ref['pk']} for input {port_name!r}"
             ) from exc
 
     if "uuid" in ref:
@@ -117,13 +111,12 @@ def _resolve_node_reference(ref: dict[str, Any], port_name: str) -> orm.Node:
             return orm.load_code(ref["label"])
         except Exception as exc:
             raise SubmissionInputError(
-                f"No Code found with label={ref['label']!r} for input {port_name!r}. "
-                f"Use the format 'name@computer', e.g. 'bash@localhost'."
+                f"No Code found with label={ref['label']!r} for input {port_name!r}"
             ) from exc
 
     raise SubmissionInputError(
-        f"Unrecognised node reference for input {port_name!r}: {ref!r}. "
-        f'Use one of: {{"pk": N}}, {{"uuid": "..."}}, {{"label": "name@computer"}}.'
+        f"Input {port_name!r} has invalid reference dict {ref!r}: "
+        f"must contain 'pk', 'uuid', or 'label'."
     )
 
 
@@ -143,8 +136,70 @@ def _is_reference_type(expected_types: tuple[type, ...]) -> bool:
     )
 
 
+def _resolve_port_value(name: str, value: Any, port: Any) -> Any:
+    # Already an AiiDA node — use as-is
+    if isinstance(value, orm.Node):
+        return value
+
+    # Explicit node reference dict — resolve and use directly
+    if isinstance(value, dict) and {"pk", "uuid", "label"} & value.keys():
+        return _resolve_node_reference(value, name)
+
+    # If port is a PortNamespace and value is a dict without node reference keys:
+    if isinstance(port, PortNamespace) and isinstance(value, dict):
+        return _resolve_namespace_inputs(value, port)
+
+    valid_type = getattr(port, "valid_type", None) if port else None
+
+    # Normalise valid_type to a tuple, stripping NoneType
+    if valid_type is None:
+        expected_types: tuple[type, ...] = ()
+    elif isinstance(valid_type, tuple):
+        expected_types = tuple(t for t in valid_type if t is not type(None))
+    else:
+        expected_types = (valid_type,) if valid_type is not type(None) else ()
+
+    # Ports that can't be built from a bare value require an explicit reference
+    if _is_reference_type(expected_types):
+        raise SubmissionInputError(
+            f"Input {name!r} expects a node reference, not a plain value. "
+            f'Use one of: {{"pk": N}}, {{"uuid": "..."}}, '
+            f'{{"label": "name@computer"}}.'
+        )
+
+    compatible_nodes = _COMPATIBLE_NODES.get(type(value), ())
+    for expected in expected_types:
+        if isinstance(expected, type) and any(
+            issubclass(node, expected) for node in compatible_nodes
+        ):
+            return expected(value)
+    return value
+
+
+def _resolve_namespace_inputs(
+    inputs: dict[str, Any], namespace: PortNamespace
+) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    for name, value in inputs.items():
+        port = namespace.get(name)
+        if port is None and getattr(namespace, "dynamic", False):
+            dynamic_valid_type = getattr(namespace, "valid_type", None)
+            if isinstance(dynamic_valid_type, type) and issubclass(
+                dynamic_valid_type, PortNamespace
+            ):
+                resolved[name] = _resolve_namespace_inputs(value, dynamic_valid_type())
+                continue
+
+            class _DynamicPortProxy:
+                valid_type = dynamic_valid_type
+
+            port = _DynamicPortProxy()
+        resolved[name] = _resolve_port_value(name, value, port)
+    return resolved
+
+
 def _resolve_inputs(entry_point: str, inputs: dict[str, Any]) -> dict[str, Any]:
-    """Resolve user-supplied values to AiiDA nodes using the process port spec.
+    """Resolve user-supplied values to AiiDA nodes using the process port spec recursively.
 
     Input value conventions
     -----------------------
@@ -167,10 +222,7 @@ def _resolve_inputs(entry_point: str, inputs: dict[str, Any]) -> dict[str, Any]:
         ``StructureData``, ``RemoteData``, ...) *require* an explicit reference
         dict. Passing a bare primitive raises a clear ``SubmissionInputError``.
 
-    Only top-level ports are resolved. A nested input namespace (e.g.
-    ``pw.parameters`` on a real workchain) is passed through unchanged, so this
-    handles flat-input processes (the arithmetic add / multiply_add demos) but
-    not workflows whose inputs live under nested namespaces.
+    Recursively resolves ports across top-level inputs and nested namespaces.
 
     Args:
         entry_point: AiiDA entry point string.
@@ -187,60 +239,10 @@ def _resolve_inputs(entry_point: str, inputs: dict[str, Any]) -> dict[str, Any]:
     """
     process_class = _load_process_class(entry_point)
     spec = process_class.spec()
-    resolved: dict[str, Any] = {}
-
-    for name, value in inputs.items():
-        # Already an AiiDA node — use as-is
-        if isinstance(value, orm.Node):
-            resolved[name] = value
-            continue
-
-        # Explicit node reference dict — resolve and use directly
-        if isinstance(value, dict) and {"pk", "uuid", "label"} & value.keys():
-            resolved[name] = _resolve_node_reference(value, name)
-            continue
-
-        # Get the expected type from the port spec
-        port = spec.inputs.get(name)
-        valid_type = getattr(port, "valid_type", None) if port else None
-
-        # Normalise valid_type to a tuple, stripping NoneType
-        if valid_type is None:
-            expected_types: tuple[type, ...] = ()
-        elif isinstance(valid_type, tuple):
-            expected_types = tuple(t for t in valid_type if t is not type(None))
-        else:
-            expected_types = (valid_type,) if valid_type is not type(None) else ()
-
-        # Ports that can't be built from a bare value require an explicit reference
-        if _is_reference_type(expected_types):
-            raise SubmissionInputError(
-                f"Input {name!r} expects a node reference, not a plain value. "
-                f'Use one of: {{"pk": N}}, {{"uuid": "..."}}, '
-                f'{{"label": "name@computer"}}.'
-            )
-
-        # Auto-wrap a bare primitive in the first port-accepted node type the
-        # value can faithfully represent (see _COMPATIBLE_NODES). A value
-        # incompatible with every accepted type is left raw, so the spec
-        # validator reports the type error rather than the wrap silently
-        # coercing it. Nodes are intentionally NOT stored here -- storage
-        # happens during submit()/run_get_node() so that validation failures
-        # leave no orphaned nodes in the database (ADR-07).
-        compatible_nodes = _COMPATIBLE_NODES.get(type(value), ())
-        for expected in expected_types:
-            if isinstance(expected, type) and any(
-                issubclass(node, expected) for node in compatible_nodes
-            ):
-                resolved[name] = expected(value)
-                break
-        else:
-            resolved[name] = value
-
-    return resolved
+    return _resolve_namespace_inputs(inputs, spec.inputs)
 
 
-def _format_resolved_inputs(resolved: dict[str, Any]) -> str:
+def _format_resolved_inputs(resolved: dict[str, Any], prefix: str = "") -> str:
     """Format resolved AiiDA nodes for human-readable display in the HITL prompt.
 
     For each resolved input, shows:
@@ -249,25 +251,31 @@ def _format_resolved_inputs(resolved: dict[str, Any]) -> str:
 
     Args:
         resolved: Dict of port names to resolved AiiDA nodes or plain values.
+        prefix: Optional prefix for nested namespaces.
 
     Returns:
         A formatted multi-line string for display.
     """
     lines = []
     for name, node in resolved.items():
-        if isinstance(node, orm.Node):
+        full_name = f"{prefix}{name}" if prefix else name
+        if isinstance(node, dict) and not isinstance(node, orm.Node):
+            lines.append(_format_resolved_inputs(node, prefix=f"{full_name}."))
+        elif isinstance(node, orm.Node):
             node_type = type(node).__name__
             if node.is_stored:
                 # Existing node loaded by pk/uuid/label
                 value = node.value if hasattr(node, "value") else repr(node)
-                lines.append(f"   {name}: {node_type}(pk={node.pk}, value={value!r})")
+                lines.append(
+                    f"   {full_name}: {node_type}(pk={node.pk}, value={value!r})"
+                )
             else:
                 # Newly wrapped primitive — not yet in DB
                 value = node.value if hasattr(node, "value") else repr(node)
-                lines.append(f"   {name}: {node_type}(value={value!r})  [new]")
+                lines.append(f"   {full_name}: {node_type}(value={value!r})  [new]")
         else:
-            lines.append(f"   {name}: {node!r}")
-    return "\n".join(lines)
+            lines.append(f"   {full_name}: {node!r}")
+    return "\n".join([line for line in lines if line])
 
 
 def _prepare_submission(

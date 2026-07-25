@@ -16,11 +16,13 @@ from pydantic import Field
 from typing_extensions import TypedDict
 
 __all__ = [
+    "CodeRecord",
     "Identifier",
     "NodeLink",
     "ProcessRecord",
     "ProcessStatus",
     "QueryResult",
+    "StructureImportResult",
     "StructureRecord",
     "SubmitResult",
 ]
@@ -43,6 +45,37 @@ class ProcessStatus(TypedDict):
     state: str | None
     exit_status: int | None
     exit_message: str | None
+
+
+class CodeRecord(TypedDict):
+    """A row returned by ``list_codes``.
+
+    ``full_label`` is the ``name@computer`` string a submission's ``code`` input
+    takes as ``{"label": ...}``, so a caller can hand it straight back without
+    reassembling it from the label and computer.
+    """
+
+    pk: int
+    uuid: str
+    label: str
+    full_label: str
+    computer: str | None
+    default_calc_job_plugin: str | None
+    node_type: str
+
+
+class StructureImportResult(TypedDict):
+    """Return shape of ``import_structure``.
+
+    ``pk`` is the point of the tool: it is what a submission's ``structure``
+    input takes as ``{"pk": ...}``.
+    """
+
+    pk: int
+    uuid: str
+    formula: str
+    num_sites: int
+    label: str
 
 
 class ProcessRecord(TypedDict):
