@@ -126,3 +126,49 @@ def silicon_structure() -> orm.StructureData:
     structure.append_atom(position=(1.5, 1.5, 1.5), symbols="Si")
     structure.store()
     return structure
+
+
+@pytest.fixture(scope="session")
+def failed_multiply_add(
+    arithmetic_add_code: orm.InstalledCode,
+) -> orm.WorkChainNode:
+    """A real, *failed* ``MultiplyAddWorkChain`` run (session-scoped).
+
+    Runs ``core.arithmetic.multiply_add`` with ``z=-100``, so ``x * y + z`` is
+    negative: the nested ``ArithmeticAddCalculation`` exits 410 and the work
+    chain exits 400. The nesting is the point --- the work chain's own code says
+    only that a sub-process failed, and the cause is one level down --- so this
+    is the fixture for anything that has to find a root cause rather than read
+    a top-level exit status.
+
+    :return: The stored top-level ``WorkChainNode`` for the failed run.
+    """
+    _, node = run_get_node(
+        MultiplyAddWorkChain,
+        x=orm.Int(2),
+        y=orm.Int(3),
+        z=orm.Int(-100),
+        code=arithmetic_add_code,
+    )
+    assert isinstance(node, orm.WorkChainNode)
+    assert node.exit_status, "the fixture is only useful if the run actually failed"
+    return node
+
+
+@pytest.fixture
+def without_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build agents as if no plugin were installed.
+
+    Two tests pin an agent's tool surface by *exact* equality, which is only
+    meaningful for the tools this package registers itself. A plugin may
+    contribute more --- ``dev/qe_rag_stub`` does, once ``uv sync --group qe``
+    has run --- and without this those assertions fail on a developer's machine
+    while passing in CI, where no plugin is installed. That is the worst
+    direction for a test to be wrong in.
+
+    Plugin contribution is not left untested by stubbing it here; it is tested
+    where it belongs, in ``tests/plugins/``.
+    """
+    from aiida_agents.agents import analysis
+
+    monkeypatch.setattr(analysis, "discover_plugins", lambda: ())
